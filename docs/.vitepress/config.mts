@@ -91,7 +91,7 @@ function formatTitle(str: string) {
 export default defineConfig({
   title: "请神中",
   description: "天花板",
-  base: '/repo/',
+  base: '/node/',
   locales: {
     root: {
       label: '简体中文',
