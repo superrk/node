@@ -53,6 +53,7 @@ function generateSidebarWithFrontmatter(dir: string, basePath = "") {
       }
     }
   });
+  console.log(sidebar);
   // 按 order 排序
   return sidebar.sort((a, b) => (a.order || 0) - (b.order || 0));
 }
@@ -86,11 +87,10 @@ function formatTitle(str: string) {
 //     sidebar: generateSidebarWithFrontmatter('./')
 //   }
 // })
-
 // https://vitepress.dev/reference/site-config
 export default defineConfig({
-  title: "请神中",
-  description: "天花板",
+  title: "诸神保佑，代码不出笔友集",
+  description: "烦请神明保佑我，代码不出笔友集",
   base: '/node/',
   locales: {
     root: {
@@ -105,8 +105,5 @@ export default defineConfig({
     outline:{
       label: '本页大纲'
     },
-    socialLinks: [
-      { icon: "gitee", link: "https://github.com/vuejs/vitepress" },
-    ],
   },
 });

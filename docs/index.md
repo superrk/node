@@ -1,6 +1,6 @@
 # Reactive Streams
 
-## Reactive Streams 规范详解
+## Reactive Streams 规范
 
 ### 什么是 Reactive Streams？
 
@@ -25,7 +25,7 @@ Reactive Streams 规范诞生于 2013 年，由 Netflix、Pivotal、Lightbend �
 
 ## 核心概念
 
-Reactive Streams 遵循的 4 个核心概念：Java9的Flow API完整实现了这些内容。
+Reactive Streams 遵循的 4 个核心概念：Java9 的Flow API完整实现了这些内容。
 1. **Publisher（发布者）**
 
    Publisher 是数据流的源头，负责向订阅者发布数据。它提供了 `subscribe` 方法，允许 Subscriber 订阅数据流。
@@ -261,16 +261,24 @@ flux.subscribe(
 );
 ```
 
-### Akka Streams
+### Mutiny
 
-Akka Streams 提供了基于 Actor 的 Reactive Streams 实现，适合构建分布式系统。
+Mutiny 是一个现代的 Reactive Streams 实现，提供直观的 API 和强大的异步流处理能力，通常配合quarkus框架使用。
 
 ```java
-Source<Integer, NotUsed> source = Source.range(1, 10);
-Sink<Integer, CompletionStage<Done>> sink = Sink.foreach(System.out::println);
+Uni<String> uni1 = Uni.createFrom().item("Hello");
+Uni<String> uni2 = Uni.createFrom().item("World");
+Uni<String> combined = Uni.combine().all()
+    .unis(uni1, uni2)
+    .asTuple()
+    .onItem().transform(tuple -> tuple.getItem1() + " " + tuple.getItem2());
 
-RunnableGraph<CompletionStage<Done>> graph = source.to(sink);
-graph.run(system);
+Multi.createFrom().items("apple", "banana")
+    .onItem().transform(String::toUpperCase)  // map
+    .onItem().transformToMulti(fruit -> 
+        Multi.createFrom().items(fruit + "1", fruit + "2"))
+    .concatenate()  // flatMap
+    .subscribe().with(System.out::println);
 ```
 
 ## 总结

@@ -374,111 +374,313 @@ Mono<String> asyncMono = Mono.fromCallable(() -> {
     .subscribeOn(Schedulers.boundedElastic());
 ```
 
-## 与 Spring WebFlux 集成
+---
 
-Project Reactor 是 Spring WebFlux 的基础，为构建反应式 Web 应用提供了强大支持。Spring WebFlux 允许使用函数式编程模型或注解驱动的控制器。
+### 实际应用场景
 
-**注解驱动控制器示例：**
+#### 用户服务示例
 
 ```java
-@RestController
-public class ReactiveController {
+/**
+ * 查询用户及其订单信息 - 组合多个异步操作
+ */
+public static Mono<UserWithOrders> getUserWithOrders(int userId) {
+    Mono<User> userMono = findUserById(userId);
+    Flux<Order> ordersFlux = findOrdersByUserId(userId);
+    
+    // 并行查询用户和订单，然后组合
+    return Mono.zip(userMono, ordersFlux.collectList())
+            .map(tuple -> new UserWithOrders(tuple.getT1(), tuple.getT2()));
+}
 
-    @GetMapping("/users")
-    public Flux<User> getUsers() {
-        return userService.findAll()
-            .doOnNext(user -> log.info("Processing user: {}", user.getId()));
+/**
+ * 并发查询多个用户
+ */
+public static Flux<User> findUsersConcurrently(List<Integer> userIds) {
+    return Flux.fromIterable(userIds)
+            .parallel()  // 转为并行流
+            .runOn(Schedulers.parallel())
+            .flatMap(UserServiceExample::findUserById)
+            .sequential();  // 转回顺序流
+}
+
+/**
+ * 查找高价值客户（订单总额超过指定金额）
+ */
+public static Flux<UserWithOrderSummary> findHighValueCustomers(double minTotalAmount) {
+    return Flux.fromIterable(userDatabase.keySet())
+            .flatMap(userId -> {
+                Mono<User> userMono = findUserById(userId);
+                Flux<Order> ordersFlux = findOrdersByUserId(userId);
+                
+                return Mono.zip(
+                        userMono,
+                        ordersFlux.map(Order::getAmount).reduce(0.0, Double::sum)
+                ).map(tuple -> new UserWithOrderSummary(tuple.getT1(), tuple.getT2()));
+            })
+            .filter(userWithSummary -> userWithSummary.getTotalAmount() > minTotalAmount);
+}
+```
+
+### 实时数据流处理（股票价格监控）
+
+```java
+// 模拟多只股票的价格流
+Flux<StockPrice> appleStream = simulateStockPrice("AAPL");
+Flux<StockPrice> googleStream = simulateStockPrice("GOOGL");
+Flux<StockPrice> teslaStream = simulateStockPrice("TSLA");
+
+// 合并多个股票流并计算统计信息
+Flux.merge(appleStream, googleStream, teslaStream)
+    .doOnNext(price -> System.out.println("[实时] " + price))
+    // 窗口：每5个价格计算一次平均
+    .window(5)
+    .flatMap(window -> window
+            .collectList()
+            .map(prices -> {
+                double avg = prices.stream()
+                        .mapToDouble(StockPrice::price)
+                        .average()
+                        .orElse(0.0);
+                return String.format("[统计] 5次平均价格: $%.2f", avg);
+            }))
+    .subscribe(System.out::println);
+```
+
+### 限流与防抖控制
+
+```java
+// 模拟高频用户输入（如搜索框输入）
+Flux<String> userInputs = Flux.interval(Duration.ofMillis(100))
+        .take(10)
+        .map(i -> "搜索词" + i);
+
+// 防抖：使用 sample 模拟防抖效果
+userInputs
+    .doOnNext(input -> System.out.println("[输入] " + input))
+    .sample(Duration.ofMillis(300))  // 每300ms采样一次
+    .subscribe(input -> System.out.println("[采样后] " + input));
+
+// 限流：限制处理速率
+Flux.range(1, 20)
+    .limitRate(5)  // 每次只请求5个元素
+    .subscribe();
+```
+
+### 批处理与窗口操作
+
+```java
+// 按数量批量处理（每5条处理一次）
+dataStream
+    .buffer(5)
+    .flatMap(this::simulateBatchSave)
+    .subscribe(result -> System.out.println("批量保存结果: " + result));
+
+// 按时间窗口处理（每500ms处理一次）
+Flux.interval(Duration.ofMillis(80))
+    .window(Duration.ofMillis(500))
+    .flatMap(window -> window.collectList())
+    .subscribe(list -> System.out.println("窗口数据: " + list));
+
+// 按时间或数量触发（先到先触发）
+Flux.interval(Duration.ofMillis(100))
+    .bufferTimeout(5, Duration.ofMillis(400))  // 5条或400ms，先到先触发
+    .subscribe(batch -> System.out.println("批量: " + batch.size() + "条"));
+```
+
+### 多级缓存模式
+
+```java
+/**
+ * 多级缓存查询 (L1 -> L2 -> DB)
+ */
+private static Mono<String> getWithMultiLevelCache(int id,
+                                                   Map<Integer, String> l1Cache,
+                                                   Map<Integer, String> l2Cache) {
+    // L1缓存检查
+    if (l1Cache.containsKey(id)) {
+        return Mono.just(l1Cache.get(id));
     }
 
-    @GetMapping("/user/{id}")
-    public Mono<User> getUser(@PathVariable String id) {
-        return userService.findById(id)
-            .switchIfEmpty(Mono.error(new UserNotFoundException(id)));
-    }
+    // L2缓存检查，如果不存在则查询DB
+    return Mono.justOrEmpty(l2Cache.get(id))
+            .switchIfEmpty(Mono.defer(() -> simulateDatabaseQuery(id)))
+            .doOnNext(result -> l1Cache.put(id, result));  // 回填L1缓存
+}
+```
 
-    @PostMapping("/user")
-    public Mono<User> createUser(@RequestBody Mono<User> userMono) {
-        return userMono
-            .flatMap(userService::save)
-            .doOnSuccess(user -> log.info("Created user: {}", user.getId()));
-    }
+---
 
-    @GetMapping(value = "/events", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-    public Flux<ServerSentEvent<String>> getEvents() {
-        return Flux.interval(Duration.ofSeconds(1))
-            .map(sequence -> ServerSentEvent.<String>builder()
-                .id(String.valueOf(sequence))
-                .event("periodic-event")
-                .data("SSE - " + LocalTime.now().toString())
-                .build());
+## 大文件处理
+
+### 流式逐行处理
+
+```java
+/**
+ * 响应式逐行读取文件 - 避免内存溢出
+ */
+private static Flux<String> readLinesReactive(Path filePath) {
+    return Flux.using(
+            () -> new BufferedReader(new FileReader(filePath.toFile())),
+            reader -> Flux.fromStream(reader.lines()),
+            reader -> {
+                try {
+                    reader.close();
+                } catch (IOException e) {
+                    e.printStackTrace();
+                }
+            }
+    ).subscribeOn(Schedulers.boundedElastic());
+}
+
+// 使用：流式处理大文件
+readLinesReactive(filePath)
+    .filter(line -> !line.trim().isEmpty())
+    .map(String::toUpperCase)
+    .take(1000)  // 只处理前1000行
+    .subscribe();
+```
+
+### 并行处理文件内容
+
+```java
+readLinesReactive(filePath)
+    .buffer(100)  // 每100行作为一个批次
+    .flatMap(batch -> Flux.fromIterable(batch)
+            .parallel(4)  // 使用4个线程并行处理
+            .runOn(Schedulers.parallel())
+            .map(line -> processLine(line))
+            .sequential()
+    )
+    .subscribe();
+```
+
+### 背压感知的大文件处理
+
+```java
+readLinesReactive(filePath)
+    .onBackpressureBuffer(50,  // 缓冲区大小
+            dropped -> System.out.println("背压丢弃: " + dropped),
+            BufferOverflowStrategy.DROP_OLDEST)  // 丢弃最旧的数据
+    .flatMap(line -> 
+            Mono.fromCallable(() -> slowProcess(line))
+                .subscribeOn(Schedulers.boundedElastic()),
+            5  // 最大并发数限制
+    )
+    .subscribe();
+```
+
+### MapReduce 风格的大文件处理
+
+```java
+// 将文件分成多个 chunk，每个 chunk 并行处理
+Flux<FileChunk> chunks = splitFileIntoChunks(filePath, 5);
+
+// Map 阶段：并行处理每个 chunk
+chunks
+    .flatMap(chunk -> processChunk(chunk)
+            .subscribeOn(Schedulers.boundedElastic()))
+    .reduce(new MapReduceResult(0, 0, 0), MapReduceResult::merge)
+    .subscribe(result -> {
+        System.out.println("总行数: " + result.totalLines());
+        System.out.println("总字符数: " + result.totalChars());
+    });
+```
+
+---
+
+## WebFlux 常见模式
+
+### REST API 聚合模式
+
+```java
+// 一个端点需要调用多个下游服务并合并结果
+Mono<OrderInfo> orderMono = fetchOrderInfo(orderId);
+Mono<UserInfo> userMono = fetchUserInfo(userId);
+Flux<ProductInfo> productsFlux = fetchProducts(productIds);
+
+// 使用 zip 并行调用并合并结果
+Mono<OrderDetailView> orderDetail = Mono.zip(orderMono, userMono, productsFlux.collectList())
+    .map(tuple -> new OrderDetailView(
+            tuple.getT1(),  // order
+            tuple.getT2(),  // user
+            tuple.getT3()   // products
+    ));
+
+orderDetail.subscribe(detail -> System.out.println("订单详情: " + detail));
+```
+
+### 响应式缓存模式
+
+```java
+/**
+ * 响应式缓存实现（带缓存击穿防护）
+ */
+static class ReactiveCache {
+    private final Map<String, Mono<?>> loadingCache = new ConcurrentHashMap<>();
+    private final Map<String, Object> cache = new ConcurrentHashMap<>();
+
+    @SuppressWarnings("unchecked")
+    public <T> Mono<T> get(String key, Function<String, Mono<T>> loader) {
+        // 检查内存缓存
+        if (cache.containsKey(key)) {
+            return Mono.just((T) cache.get(key));
+        }
+
+        // 使用 computeIfAbsent 防止缓存击穿
+        return (Mono<T>) loadingCache.computeIfAbsent(key, k ->
+                loader.apply(k)
+                    .doOnNext(value -> {
+                        cache.put(k, value);
+                        loadingCache.remove(k);
+                    })
+                    .cache()  // 确保并发请求共享结果
+        );
     }
 }
 ```
 
-**函数式端点示例：**
+### Saga 事务模式
 
 ```java
-@Configuration
-public class RouterConfig {
+/**
+ * Saga 模式 - 分布式事务补偿
+ */
+private static Mono<String> createOrderSaga(OrderRequest request) {
+    String orderId = "ORDER-" + System.currentTimeMillis();
 
-    @Bean
-    public RouterFunction<ServerResponse> userRoutes(UserHandler userHandler) {
-        return RouterFunctions.route()
-            .GET("/api/users", userHandler::getAllUsers)
-            .GET("/api/users/{id}", userHandler::getUserById)
-            .POST("/api/users", userHandler::createUser)
-            .build();
-    }
-}
-
-@Component
-public class UserHandler {
-
-    public Mono<ServerResponse> getAllUsers(ServerRequest request) {
-        return ServerResponse.ok()
-            .contentType(MediaType.APPLICATION_JSON)
-            .body(userService.findAll(), User.class);
-    }
-
-    public Mono<ServerResponse> getUserById(ServerRequest request) {
-        String id = request.pathVariable("id");
-        return userService.findById(id)
-            .flatMap(user -> ServerResponse.ok()
-                .contentType(MediaType.APPLICATION_JSON)
-                .bodyValue(user))
-            .switchIfEmpty(ServerResponse.notFound().build());
-    }
+    // Step 1: 创建订单
+    return createOrder(orderId, request)
+            // Step 2: 扣减库存
+            .flatMap(oid -> deductInventory(request.items())
+                    .then(Mono.just(oid)))
+            // Step 3: 扣款
+            .flatMap(oid -> processPayment(request.userId(), request.amount())
+                    .then(Mono.just(oid)))
+            // Step 4: 发送通知
+            .flatMap(oid -> sendNotification(request.userId(), "订单创建成功")
+                    .then(Mono.just(oid)))
+            // 补偿操作
+            .doOnError(e -> {
+                restoreInventory(request.items()).subscribe();
+                cancelOrder(orderId).subscribe();
+            });
 }
 ```
 
-**WebClient 示例：**
+### 总结
 
-```java
-@Service
-public class UserService {
+#### 适用场景
 
-    private final WebClient webClient;
+✅ **适合使用 Project Reactor：**
+- 高并发 Web 应用（配合 WebFlux）
+- 数据流处理（实时监控、日志分析）
+- 微服务间异步调用
+- 大文件处理
+- 事件驱动架构
 
-    public UserService(WebClient.Builder webClientBuilder) {
-        this.webClient = webClientBuilder.baseUrl("https://api.example.com").build();
-    }
+❌ **不适合使用：**
+- 简单的 CRUD 应用
+- 大量遗留阻塞代码
 
-    public Flux<User> findAll() {
-        return webClient.get()
-            .uri("/users")
-            .retrieve()
-            .bodyToFlux(User.class)
-            .retryWhen(Retry.backoff(3, Duration.ofSeconds(1)))
-            .timeout(Duration.ofSeconds(10));
-    }
-
-    public Mono<User> findById(String id) {
-        return webClient.get()
-            .uri("/users/{id}", id)
-            .retrieve()
-            .onStatus(HttpStatus::is4xxClientError, response ->
-                Mono.error(new UserNotFoundException(id)))
-            .bodyToMono(User.class);
-    }
-}
-```
+核心要点：响应式编程不是银弹，但在高并发 IO 场景下，它能让你用更少的资源处理更多的请求。关键在于理解非阻塞的本质，避免在响应式链中引入阻塞操作。
